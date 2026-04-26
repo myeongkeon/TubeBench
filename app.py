@@ -80,11 +80,12 @@ with st.sidebar:
 # ──────────────────────────────────────────────
 # 메인 탭 구성
 # ──────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📈 채널 분석",
     "🔍 경쟁사 벤치마킹",
     "💡 AI 영상 기획",
     "📡 트렌드 기획",
+    "🔎 키워드 분석",
     "✍️ 카피라이팅",
     "⚙️ 시스템 설정",
 ])
@@ -106,10 +107,14 @@ with tab4:
     render_trend_planner()
 
 with tab5:
+    from modules.keyword_analyzer import render_keyword_analyzer
+    render_keyword_analyzer()
+
+with tab6:
     from modules.copywriter import render_copywriter
     render_copywriter()
 
-with tab6:
+with tab7:
     st.subheader("⚙️ 시스템 설정")
 
     col1, col2 = st.columns(2)
@@ -135,6 +140,7 @@ with tab6:
             "| `channels.list` | 1 unit |\n"
             "| `playlistItems.list` | 1 unit |\n"
             "| `videos.list` | 1 unit |\n"
+            "| `commentThreads.list` | 1 unit |\n"
             "| `search.list` | **100 units** ⚠️ |"
         )
 

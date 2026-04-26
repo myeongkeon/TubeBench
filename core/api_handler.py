@@ -310,6 +310,92 @@ class YouTubeAPIHandler:
         self._save_cache(cache_key, all_stats)
         return all_stats
 
+    def search_videos_by_keyword(self, keyword: str, max_results: int = 20) -> list[dict]:
+        """
+        키워드로 YouTube 영상 검색.
+        ⚠️ Quota 비용: 100 units
+
+        Returns:
+            list of dicts with keys: video_id, title, channel_title, published_at,
+                                     description, thumbnail
+        """
+        cache_key = self._cache_key(method="search_keyword", keyword=keyword, max_results=max_results)
+        if (cached := self._load_cache(cache_key)) is not None:
+            return cached
+
+        try:
+            response = (
+                self.client.search()
+                .list(
+                    part="snippet",
+                    q=keyword,
+                    type="video",
+                    maxResults=min(max_results, 50),
+                    order="relevance",
+                    regionCode="KR",
+                )
+                .execute()
+            )
+        except HttpError as e:
+            raise RuntimeError(f"키워드 검색 실패 ({keyword}): {e}") from e
+
+        videos = []
+        for item in response.get("items", []):
+            snippet = item["snippet"]
+            videos.append({
+                "video_id":      item["id"]["videoId"],
+                "title":         snippet["title"],
+                "channel_title": snippet["channelTitle"],
+                "published_at":  snippet["publishedAt"],
+                "description":   snippet["description"][:MAX_DESCRIPTION_CHARS],
+                "thumbnail":     snippet["thumbnails"].get("medium", {}).get("url", ""),
+            })
+
+        self._save_cache(cache_key, videos)
+        return videos
+
+    def get_video_comments(self, video_id: str, max_results: int = 100) -> list[dict]:
+        """
+        영상 상위 댓글 수집 (관련도 순).
+        Quota 비용: 1 unit/page
+
+        Returns:
+            list of dicts with keys: text, like_count, published_at, author
+        """
+        cache_key = self._cache_key(method="video_comments", video_id=video_id, max_results=max_results)
+        if (cached := self._load_cache(cache_key)) is not None:
+            return cached
+
+        comments = []
+        try:
+            response = (
+                self.client.commentThreads()
+                .list(
+                    part="snippet",
+                    videoId=video_id,
+                    maxResults=min(max_results, 100),
+                    order="relevance",
+                    textFormat="plainText",
+                )
+                .execute()
+            )
+            for item in response.get("items", []):
+                top = item["snippet"]["topLevelComment"]["snippet"]
+                comments.append({
+                    "text":         top["textDisplay"][:300],
+                    "like_count":   int(top.get("likeCount", 0)),
+                    "published_at": top["publishedAt"],
+                    "author":       top.get("authorDisplayName", "익명"),
+                })
+        except HttpError as e:
+            err_str = str(e)
+            if "disabled" in err_str.lower() or "403" in err_str:
+                return []  # 댓글 비활성화
+            raise RuntimeError(f"댓글 조회 실패 ({video_id}): {e}") from e
+
+        self._save_cache(cache_key, comments)
+        return comments
+
     def clear_expired_cache(self) -> int:
         """만료된 캐시 파일 삭제. 삭제된 파일 수 반환"""
         deleted = 0

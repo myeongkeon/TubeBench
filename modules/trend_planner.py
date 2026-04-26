@@ -2,6 +2,8 @@
 트렌드 기획 모듈
 
 경쟁채널의 최근 3일 업로드를 분석해 '지금 올리면 좋을 영상'을 AI가 추천.
+분석 완료 후 '댓글분석 및 기획' 기능으로 경쟁 영상 댓글에서 시청자 VOC를 파악하여
+새로운 영상을 기획합니다.
 
 MCN 관점 추가 로직:
   - 업로드 후 경과 시간 대비 조회수 → 빠르게 트렌딩 중인 영상 가중치
@@ -94,6 +96,8 @@ def _build_trend_summary(comp_data: list[dict]) -> tuple[str, pd.DataFrame]:
                 "velocity":    round(velocity, 1),
                 "patterns":    " / ".join(_title_patterns(v["title"])),
                 "tags":        v.get("tags", []),
+                "video_id":    v["video_id"],
+                "comment_count": v.get("comment_count", 0),
             })
 
     df = pd.DataFrame(rows).sort_values("velocity", ascending=False).reset_index(drop=True)
@@ -151,6 +155,12 @@ TREND_SYSTEM = """\
 당신은 실시간 YouTube 트렌드를 분석하는 MCN 콘텐츠 전략가입니다.
 경쟁채널 데이터를 바탕으로 지금 당장 올릴 수 있는 트렌드 영상을 추천합니다.
 분석은 데이터 기반으로, 추천은 실행 가능하도록 구체적으로 작성하세요.\
+"""
+
+COMMENT_SYSTEM = """\
+당신은 YouTube 시청자 심리 분석 전문가이자 MCN 콘텐츠 기획자입니다.
+댓글 데이터에서 시청자의 니즈, 불만, 요청사항(VOC)을 파악하여
+새로운 영상 기획안을 제시합니다. 분석은 구체적이고 실행 가능하게 한국어로 작성하세요.\
 """
 
 
@@ -229,7 +239,7 @@ def _add_profile_dialog(handler: YouTubeAPIHandler):
 
 
 # ──────────────────────────────────────────────
-# 메인 렌더
+# 기록 다이얼로그
 # ──────────────────────────────────────────────
 
 @st.dialog("트렌드 기획 기록", width="large")
@@ -251,6 +261,96 @@ def _history_dialog():
     st.divider()
     st.markdown(d.get("output", ""))
 
+
+# ──────────────────────────────────────────────
+# 댓글 분석 섹션
+# ──────────────────────────────────────────────
+
+def _render_comment_section(handler: YouTubeAPIHandler, cached: dict):
+    st.divider()
+    st.markdown("### 💬 댓글분석 및 기획")
+    st.caption(
+        "경쟁 영상의 댓글을 분석하여 시청자 니즈(VOC)를 파악하고 "
+        "새로운 영상을 기획합니다."
+    )
+
+    # 수집된 영상 플랫 리스트 구성
+    all_videos = []
+    for ch in cached.get("comp_data", []):
+        for v in ch["videos"]:
+            all_videos.append({**v, "_channel": ch["title"]})
+
+    eligible = [v for v in all_videos if v.get("comment_count", 0) > 0]
+
+    if not eligible:
+        st.info("댓글이 있는 경쟁 영상이 없습니다. (댓글 비활성화 또는 0개)")
+        return
+
+    options = {
+        f'[{v["_channel"]}] {v["title"][:50]} ({v.get("view_count", 0):,}회)': v
+        for v in eligible
+    }
+    sel_label = st.selectbox("댓글 분석할 영상 선택", list(options.keys()),
+                              key="trend_comment_sel")
+    sel_video = options[sel_label]
+
+    if not st.button("💬 댓글 수집 & 기획 분석", type="secondary",
+                     use_container_width=True, key="trend_comment_btn"):
+        return
+
+    with st.spinner("댓글 수집 중..."):
+        try:
+            comments = handler.get_video_comments(sel_video["video_id"], max_results=100)
+        except RuntimeError as e:
+            st.error(f"댓글 수집 실패: {e}")
+            return
+
+    if not comments:
+        st.warning("댓글이 없거나 댓글이 비활성화된 영상입니다.")
+        return
+
+    st.success(f"✅ 댓글 {len(comments)}개 수집 완료")
+
+    with st.expander("📝 수집된 댓글 (좋아요 순)", expanded=False):
+        top_comments = sorted(comments, key=lambda c: c["like_count"], reverse=True)[:20]
+        for c in top_comments:
+            st.markdown(f"**👍 {c['like_count']}** · {c['text'][:120]}")
+
+    # AI 댓글 분석 및 기획
+    comment_box = st.empty()
+    top30 = sorted(comments, key=lambda c: c["like_count"], reverse=True)[:30]
+    comment_lines = [f'[좋아요 {c["like_count"]}] {c["text"]}' for c in top30]
+
+    prompt = f"""\
+## 분석 채널: "{sel_video["_channel"]}"
+## 분석 영상: "{sel_video["title"]}"
+
+## 시청자 댓글 (좋아요 높은 순 상위 30개)
+{chr(10).join(comment_lines)}
+
+## 요청
+### 1. 시청자 VOC 분석
+- **원하는 것 TOP 5**: 시청자가 가장 많이 원하는 내용
+- **불만 및 아쉬운 점**: 현재 콘텐츠에서 부족한 것
+- **질문 및 요청사항**: 시청자가 명시적으로 요청하는 내용
+
+### 2. 새로운 영상 기획안 3개
+각 기획안마다:
+- **제목**: 클릭률 높은 제목
+- **핵심 아이디어**: 댓글 니즈를 어떻게 충족할 것인가
+- **차별화 포인트**: 경쟁 영상과 다른 점
+- **예상 반응**: 왜 이 기획이 시청자에게 먹힐 것인가
+
+### 3. 영상 도입부 훅(Hook) 문장 3개
+댓글에서 발견한 시청자 언어를 활용한 도입부 멘트\
+"""
+    runner = AIRunner(tab_key="trend_comment_ai", system=COMMENT_SYSTEM, max_tokens=3000)
+    runner.execute(prompt, comment_box, preferred="gemini-2.0-flash")
+
+
+# ──────────────────────────────────────────────
+# 메인 렌더
+# ──────────────────────────────────────────────
 
 def render_trend_planner():
     st.subheader("📡 트렌드 기획")
@@ -293,6 +393,8 @@ def render_trend_planner():
         if profiles and chosen_id:
             if st.button("🗑️ 삭제", use_container_width=True):
                 delete_profile(chosen_id)
+                # 삭제된 채널의 캐시 정리
+                st.session_state.pop(f"trend_data_{chosen_id}", None)
                 st.rerun()
 
     # 선택 채널 요약 정보
@@ -309,7 +411,6 @@ def render_trend_planner():
 
     st.divider()
 
-    # ── 분석 실행 ───────────────────────────────
     if not selected_profile:
         return
 
@@ -319,49 +420,71 @@ def render_trend_planner():
         return
 
     my_title = selected_profile["my_channel"]["title"]
+    cache_key = f"trend_data_{chosen_id}"
 
+    # ── 분석 실행 버튼 ────────────────────────────
     run = st.button(
         f"🔍 최근 {TREND_DAYS}일 트렌드 분석 시작",
         type="primary",
         use_container_width=True,
     )
-    if not run:
+
+    if run:
+        # 영상 수집
+        comp_data = []
+        prog = st.progress(0, text="경쟁채널 수집 중...")
+
+        for i, comp in enumerate(comp_list):
+            prog.progress((i + 1) / len(comp_list), text=f"수집 중: {comp['title']}")
+            try:
+                ch_info = handler.get_channel_info(comp["channel_id"])
+                if not ch_info:
+                    continue
+                recent_videos = _fetch_recent_videos(handler, ch_info)
+                if not recent_videos:
+                    continue
+                stats     = handler.get_video_stats([v["video_id"] for v in recent_videos])
+                stats_map = {s["video_id"]: s for s in stats}
+                for v in recent_videos:
+                    s = stats_map.get(v["video_id"], {})
+                    v["view_count"]    = s.get("view_count", 0)
+                    v["comment_count"] = s.get("comment_count", 0)
+                    v["tags"]          = s.get("tags", [])
+                comp_data.append({"title": comp["title"], "videos": recent_videos})
+            except RuntimeError as e:
+                st.warning(f"{comp['title']} 수집 실패: {e}")
+
+        prog.empty()
+
+        if not comp_data:
+            st.warning(f"최근 {TREND_DAYS}일 내 업로드된 경쟁채널 영상이 없습니다.")
+            return
+
+        summary_text, df = _build_trend_summary(comp_data)
+        total_videos = sum(len(c["videos"]) for c in comp_data)
+
+        # session_state에 저장 (AI 출력은 나중에 저장)
+        st.session_state[cache_key] = {
+            "comp_data":    comp_data,
+            "df_records":   df.to_dict("records"),
+            "summary_text": summary_text,
+            "my_title":     my_title,
+            "total_videos": total_videos,
+            "ai_output":    None,  # 첫 실행 시 None → AI 재실행
+        }
+
+    # ── 결과 표시 (세션 캐시 기반) ──────────────
+    cached = st.session_state.get(cache_key)
+    if not cached:
         return
 
-    # ── 영상 수집 ────────────────────────────────
-    comp_data = []
-    prog = st.progress(0, text="경쟁채널 수집 중...")
+    total_videos = cached["total_videos"]
+    comp_data    = cached["comp_data"]
+    summary_text = cached["summary_text"]
 
-    for i, comp in enumerate(comp_list):
-        prog.progress((i + 1) / len(comp_list), text=f"수집 중: {comp['title']}")
-        try:
-            ch_info = handler.get_channel_info(comp["channel_id"])
-            if not ch_info:
-                continue
-            recent_videos = _fetch_recent_videos(handler, ch_info)
-            if not recent_videos:
-                continue
-            stats     = handler.get_video_stats([v["video_id"] for v in recent_videos])
-            stats_map = {s["video_id"]: s for s in stats}
-            for v in recent_videos:
-                s = stats_map.get(v["video_id"], {})
-                v["view_count"] = s.get("view_count", 0)
-                v["tags"]       = s.get("tags", [])
-            comp_data.append({"title": comp["title"], "videos": recent_videos})
-        except RuntimeError as e:
-            st.warning(f"{comp['title']} 수집 실패: {e}")
-
-    prog.empty()
-
-    if not comp_data:
-        st.warning(f"최근 {TREND_DAYS}일 내 업로드된 경쟁채널 영상이 없습니다.")
-        return
-
-    # ── 수집 결과 ────────────────────────────────
-    summary_text, df = _build_trend_summary(comp_data)
-    total_videos = sum(len(c["videos"]) for c in comp_data)
     st.success(f"✅ {len(comp_data)}개 채널, {total_videos}개 영상 수집 완료")
 
+    df = pd.DataFrame(cached["df_records"])
     with st.expander("📋 수집된 영상 목록 (조회 속도 높은 순)", expanded=False):
         disp = df[["channel", "title", "published_at", "view_count", "velocity", "patterns"]].copy()
         disp.columns = ["채널", "제목", "업로드일", "조회수", "속도(회/h)", "패턴"]
@@ -371,28 +494,45 @@ def render_trend_planner():
     st.divider()
     st.markdown("### 🤖 AI 트렌드 분석 & 영상 추천")
     gemini_key  = st.session_state.get("gemini_api_key", "")
-    model_label = "gemini-2.5-pro" if gemini_key else "claude-sonnet-4-6"
+    model_label = "gemini-2.0-flash" if gemini_key else "claude-sonnet-4-6"
     st.caption(f"분석 모델: `{model_label}`")
 
-    output_box  = st.empty()
-    prompt      = _build_trend_prompt(my_title, summary_text)
-    full_output = _run_ai(TAB, prompt, output_box)
+    if cached.get("ai_output") is None:
+        output_box  = st.empty()
+        prompt      = _build_trend_prompt(cached["my_title"], summary_text)
+        full_output = _run_ai(TAB, prompt, output_box)
 
-    if full_output is None:
-        return  # 승인 대기 중
+        if full_output is None:
+            return  # 승인 대기 중
 
-    if full_output:
+        if full_output:
+            cached["ai_output"] = full_output
+            st.session_state[cache_key] = cached
+
+            safe_date = datetime.now().strftime("%Y%m%d")
+            st.download_button(
+                label="📥 트렌드 리포트 다운로드 (.txt)",
+                data=full_output,
+                file_name=f"트렌드리포트_{safe_date}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+            hist.save_result(TAB, f"{my_title} ({safe_date})", {
+                "my_channel":       my_title,
+                "competitor_count": len(comp_list),
+                "videos_analyzed":  total_videos,
+                "output":           full_output,
+            })
+    else:
+        st.markdown(cached["ai_output"])
         safe_date = datetime.now().strftime("%Y%m%d")
         st.download_button(
             label="📥 트렌드 리포트 다운로드 (.txt)",
-            data=full_output,
+            data=cached["ai_output"],
             file_name=f"트렌드리포트_{safe_date}.txt",
             mime="text/plain",
             use_container_width=True,
         )
-        hist.save_result(TAB, f"{my_title} ({safe_date})", {
-            "my_channel":       my_title,
-            "competitor_count": len(comp_list),
-            "videos_analyzed":  total_videos,
-            "output":           full_output,
-        })
+
+    # ── 댓글 분석 및 기획 ───────────────────────
+    _render_comment_section(handler, cached)
