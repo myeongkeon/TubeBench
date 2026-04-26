@@ -7,6 +7,8 @@ YouTube Data API v3 연동 및 로컬 JSON 캐싱 모듈
 - LLM 전달량 최소화를 위해 필요 필드만 추출
 """
 
+from __future__ import annotations
+
 import json
 import hashlib
 import os

@@ -1,5 +1,6 @@
-# ── Core Web Framework ──────────────────────────
-streamlit>=1.33.0
+# ── Web Framework ───────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
 
 # ── YouTube Data API v3 ─────────────────────────
 google-api-python-client>=2.118.0
@@ -7,12 +8,9 @@ google-api-python-client>=2.118.0
 # ── Environment & Security ──────────────────────
 python-dotenv>=1.0.1
 
-# ── AI Planning (Claude + Gemini) ───────────────
+# ── AI (Claude + Gemini) ────────────────────────
 anthropic>=0.34.0
 google-generativeai>=0.8.0
 
 # ── Data Processing ─────────────────────────────
 pandas>=2.2.0
-
-# ── Visualization ───────────────────────────────
-plotly>=5.20.0

@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YouTube Strategy Hub</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+</head>
+<body>
+
+<!-- ── Sidebar ─────────────────────────────── -->
+<aside id="sidebar">
+  <h1>📊 YouTube Strategy Hub</h1>
+  <p class="caption">MCN급 채널 분석 플랫폼 v1.0</p>
+
+  <div class="api-section">
+    <h3>🔑 API 설정</h3>
+    <div class="api-field">
+      <label>YouTube API Key</label>
+      <input type="password" id="yt-key" placeholder="AIza..." />
+    </div>
+    <div class="api-field">
+      <label>Gemini API Key</label>
+      <input type="password" id="gemini-key" placeholder="AI..." />
+    </div>
+    <div class="api-field">
+      <label>Anthropic API Key</label>
+      <input type="password" id="anthropic-key" placeholder="sk-ant-..." />
+    </div>
+
+    <div class="api-status" id="api-status">
+      <div class="status-item"><span class="dot dot-err" id="dot-yt"></span><span id="lbl-yt">YouTube API 키 없음</span></div>
+      <div class="status-item"><span class="dot dot-warn" id="dot-gemini"></span><span id="lbl-gemini">Gemini API 키 없음</span></div>
+      <div class="status-item"><span class="dot dot-warn" id="dot-anthropic"></span><span id="lbl-anthropic">Anthropic 미설정</span></div>
+    </div>
+  </div>
+
+  <hr class="sidebar-divider" />
+  <p style="font-size:.72rem;color:#666;line-height:1.6;">
+    💡 키를 입력하면 자동 저장됩니다.<br>
+    API 키는 브라우저 localStorage에만 저장됩니다.
+  </p>
+</aside>
+
+<!-- ── Main ────────────────────────────────── -->
+<div id="main">
+  <nav id="tab-bar">
+    <button class="tab-btn active" data-tab="channel">📈 채널 분석</button>
+    <button class="tab-btn" data-tab="competitor">🔍 경쟁사 벤치마킹</button>
+    <button class="tab-btn" data-tab="planner">💡 AI 영상 기획</button>
+    <button class="tab-btn" data-tab="trend">📡 트렌드 기획</button>
+    <button class="tab-btn" data-tab="keyword">🔎 키워드 분석</button>
+    <button class="tab-btn" data-tab="copywriter">✍️ 카피라이팅</button>
+    <button class="tab-btn" data-tab="system">⚙️ 시스템</button>
+  </nav>
+
+  <div id="tab-content">
+
+    <!-- ══ 채널 분석 ══════════════════════════ -->
+    <div class="tab-panel active" id="panel-channel">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <h2 style="font-size:1.05rem;">📈 운영 채널 성과 분석</h2>
+          <button class="btn btn-secondary btn-sm" onclick="openHistory('channel_analyzer','채널 분석 기록')">📂 최근 기록</button>
+        </div>
+        <div class="row">
+          <div class="form-group" style="flex:5;">
+            <input type="text" id="ch-input" placeholder="채널 ID (UCxxxxxx), @handle, 또는 youtube.com/@handle" />
+          </div>
+          <div style="flex:1;">
+            <button class="btn btn-primary btn-full" onclick="analyzeChannel()">🔍 분석</button>
+          </div>
+        </div>
+      </div>
+      <div id="ch-result"></div>
+    </div>
+
+    <!-- ══ 경쟁사 벤치마킹 ═══════════════════ -->
+    <div class="tab-panel" id="panel-competitor">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <h2 style="font-size:1.05rem;">🔍 경쟁사 벤치마킹 & 아웃라이어 분석</h2>
+          <button class="btn btn-secondary btn-sm" onclick="openHistory('competitor_bench','경쟁사 분석 기록')">📂 최근 기록</button>
+        </div>
+        <div class="form-group">
+          <label>내 채널 (선택 — Content Gap 분석 활성화)</label>
+          <input type="text" id="comp-my" placeholder="UCxxxxxx 또는 @handle" />
+        </div>
+        <div class="row">
+          <div class="form-group"><label>경쟁 채널 1</label><input type="text" id="comp-c1" placeholder="UCxxxxxx 또는 @handle" /></div>
+          <div class="form-group"><label>경쟁 채널 2</label><input type="text" id="comp-c2" placeholder="UCxxxxxx 또는 @handle" /></div>
+          <div class="form-group"><label>경쟁 채널 3</label><input type="text" id="comp-c3" placeholder="UCxxxxxx 또는 @handle" /></div>
+        </div>
+        <div class="form-group">
+          <label>아웃라이어 기준 배율: <span id="outlier-val">2.0</span>x</label>
+          <input type="range" id="outlier-mult" min="1.5" max="5.0" step="0.5" value="2.0"
+                 oninput="document.getElementById('outlier-val').textContent=this.value" style="width:100%;margin-top:4px;" />
+        </div>
+        <button class="btn btn-primary btn-full" onclick="analyzeCompetitor()">🚀 벤치마킹 시작</button>
+      </div>
+      <div id="comp-result"></div>
+    </div>
+
+    <!-- ══ AI 영상 기획 ═══════════════════════ -->
+    <div class="tab-panel" id="panel-planner">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <h2 style="font-size:1.05rem;">💡 AI 영상 기획기</h2>
+          <button class="btn btn-secondary btn-sm" onclick="openHistory('ai_planner','AI 기획 기록')">📂 최근 기록</button>
+        </div>
+
+        <div style="margin-bottom:12px;">
+          <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:6px;">🤖 AI 모델 선택</label>
+          <div class="model-select-row" id="planner-models"></div>
+        </div>
+
+        <div class="row">
+          <div class="form-group" style="flex:2;">
+            <label>🎯 영상 주제 / 핵심 키워드 *</label>
+            <input type="text" id="plan-topic" placeholder="예: 파이썬으로 월급 자동 계산기 만들기" />
+          </div>
+          <div class="form-group" style="flex:1;">
+            <label>목표 영상 길이</label>
+            <select id="plan-length">
+              <option>미정</option>
+              <option>쇼츠 (60초 이내)</option>
+              <option>단편 (5~10분)</option>
+              <option>중편 (10~20분)</option>
+              <option>장편 (20분 이상)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>채널 정보 (선택)</label>
+          <textarea id="plan-ch-info" placeholder="예: 30대 직장인 대상 재테크·자기계발 채널, 구독자 5만명" rows="2"></textarea>
+        </div>
+        <details>
+          <summary>📊 경쟁사 분석 결과 붙여넣기 (선택)</summary>
+          <div style="padding-top:10px;">
+            <div class="form-group">
+              <label>경쟁사 아웃라이어 영상 제목 & 지표</label>
+              <textarea id="plan-outlier" placeholder="- '직장인이 3개월 만에 1억 모은 방법' | 조회수 230만 | 평균대비 8.2x" rows="3"></textarea>
+            </div>
+            <div class="form-group">
+              <label>Content Gap 키워드</label>
+              <textarea id="plan-gap" placeholder="예: 재테크, ETF 투자, 절세, 청약 통장" rows="2"></textarea>
+            </div>
+          </div>
+        </details>
+        <button class="btn btn-primary btn-full" style="margin-top:12px;" onclick="streamPlanner()">🚀 AI 기획 시작</button>
+      </div>
+      <div id="plan-output-wrap" style="display:none;">
+        <div class="card">
+          <h3 style="margin-bottom:12px;font-size:.95rem;">📄 기획안</h3>
+          <div class="ai-output" id="plan-output"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ 트렌드 기획 ════════════════════════ -->
+    <div class="tab-panel" id="panel-trend">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <h2 style="font-size:1.05rem;">📡 트렌드 기획</h2>
+          <button class="btn btn-secondary btn-sm" onclick="openHistory('trend_planner','트렌드 기획 기록')">📂 최근 기록</button>
+        </div>
+
+        <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+          <button class="btn btn-secondary btn-sm" onclick="openProfileManager()">📋 채널 프로필 관리</button>
+          <select id="trend-profile-sel" style="flex:1;border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:.83rem;" onchange="loadTrendProfile()">
+            <option value="">-- 저장된 프로필 선택 --</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>내 채널 ID 또는 핸들 *</label>
+          <input type="text" id="trend-my" placeholder="UCxxxxxx 또는 @handle" />
+        </div>
+        <div id="trend-comp-inputs">
+          <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:6px;">경쟁 채널 (최대 5개)</label>
+          <div id="trend-comp-list">
+            <input type="text" class="trend-comp" placeholder="@handle 또는 UCxxxxxx" style="margin-bottom:6px;" />
+            <input type="text" class="trend-comp" placeholder="@handle 또는 UCxxxxxx" style="margin-bottom:6px;" />
+            <input type="text" class="trend-comp" placeholder="@handle 또는 UCxxxxxx" style="margin-bottom:6px;" />
+          </div>
+        </div>
+
+        <div style="margin-top:12px;">
+          <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:6px;">🤖 AI 모델 선택</label>
+          <div class="model-select-row" id="trend-models"></div>
+        </div>
+
+        <button class="btn btn-primary btn-full" style="margin-top:12px;" onclick="analyzeTrend()">🚀 트렌드 분석 시작</button>
+      </div>
+      <div id="trend-result"></div>
+    </div>
+
+    <!-- ══ 키워드 분석 ════════════════════════ -->
+    <div class="tab-panel" id="panel-keyword">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <h2 style="font-size:1.05rem;">🔎 키워드 분석</h2>
+          <button class="btn btn-secondary btn-sm" onclick="openHistory('keyword_analyzer','키워드 분석 기록')">📂 최근 기록</button>
+        </div>
+        <div class="row">
+          <div class="form-group" style="flex:4;">
+            <input type="text" id="kw-input" placeholder="분석할 키워드 입력 (예: 파이썬 강의)" />
+          </div>
+          <div style="flex:1;">
+            <button class="btn btn-primary btn-full" onclick="analyzeKeyword()">🔍 분석</button>
+          </div>
+        </div>
+        <div style="margin-top:10px;">
+          <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:6px;">🤖 AI 전략 모델</label>
+          <div class="model-select-row" id="kw-models"></div>
+        </div>
+      </div>
+      <div id="kw-result"></div>
+    </div>
+
+    <!-- ══ 카피라이팅 ══════════════════════════ -->
+    <div class="tab-panel" id="panel-copywriter">
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <h2 style="font-size:1.05rem;">✍️ 카피라이팅</h2>
+          <button class="btn btn-secondary btn-sm" onclick="openHistory('copywriter','카피라이팅 기록')">📂 최근 기록</button>
+        </div>
+
+        <div style="margin-bottom:12px;">
+          <label style="font-size:.82rem;font-weight:600;display:block;margin-bottom:6px;">🤖 AI 모델 선택</label>
+          <div class="model-select-row" id="copy-models"></div>
+        </div>
+
+        <div class="row">
+          <div class="form-group">
+            <label>키워드 *</label>
+            <input type="text" id="copy-kw" placeholder="예: 재테크, 파이썬, 여행" />
+          </div>
+          <div class="form-group">
+            <label>채널 스타일</label>
+            <select id="copy-style"></select>
+          </div>
+        </div>
+        <div class="row">
+          <div class="form-group">
+            <label>감정 트리거</label>
+            <select id="copy-emotion">
+              <option>🤔 호기심</option>
+              <option>😱 충격·공포</option>
+              <option>😊 공감</option>
+              <option>😄 유머</option>
+              <option>😲 놀라움</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>제목 길이</label>
+            <select id="copy-length">
+              <option>일반형 (30~40자)</option>
+              <option>쇼츠 초단형 (15자 이내)</option>
+              <option>검색 롱테일 (45자 이상)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>영상 내용 설명 *</label>
+          <textarea id="copy-content" placeholder="영상에서 다룰 내용을 간략히 설명하세요." rows="3"></textarea>
+        </div>
+        <button class="btn btn-primary btn-full" onclick="streamCopywriter()">✍️ 카피 생성</button>
+      </div>
+      <div id="copy-output-wrap" style="display:none;">
+        <div class="card">
+          <h3 style="margin-bottom:12px;font-size:.95rem;">📝 카피라이팅 결과</h3>
+          <div class="ai-output" id="copy-output"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ 시스템 ══════════════════════════════ -->
+    <div class="tab-panel" id="panel-system">
+      <div class="card">
+        <h2 style="font-size:1.05rem;margin-bottom:16px;">⚙️ 시스템 설정</h2>
+        <div class="row">
+          <div style="flex:1;">
+            <h4 style="margin-bottom:8px;">캐시 관리</h4>
+            <button class="btn btn-secondary" onclick="clearCache()">🗑️ 만료 캐시 삭제</button>
+            <div id="cache-msg" style="margin-top:8px;"></div>
+          </div>
+          <div style="flex:2;">
+            <h4 style="margin-bottom:8px;">API 할당량 안내</h4>
+            <div class="alert alert-info">
+              YouTube Data API v3 일일 할당량: <strong>10,000 units</strong><br><br>
+              <table style="font-size:.8rem;border-collapse:collapse;">
+                <tr><td style="padding:2px 8px;">channels.list</td><td>1 unit</td></tr>
+                <tr><td style="padding:2px 8px;">playlistItems.list</td><td>1 unit</td></tr>
+                <tr><td style="padding:2px 8px;">videos.list</td><td>1 unit</td></tr>
+                <tr><td style="padding:2px 8px;">commentThreads.list</td><td>1 unit</td></tr>
+                <tr><td style="padding:2px 8px;color:#c00;font-weight:700;">search.list</td><td style="color:#c00;font-weight:700;">100 units ⚠️</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+        <hr style="margin:20px 0;border:none;border-top:1px solid var(--border);" />
+        <h4 style="margin-bottom:8px;">캐시 정책</h4>
+        <pre style="background:#f5f5f5;padding:12px;border-radius:7px;font-size:.8rem;">캐시 유효 시간 : 1시간 (3,600초)
+저장 위치       : cache/*.json
+키 생성 방식    : MD5(요청 파라미터)</pre>
+      </div>
+    </div>
+
+  </div><!-- /tab-content -->
+</div><!-- /main -->
+
+<!-- ── History Modal ─────────────────────────── -->
+<div id="hist-modal" class="modal-backdrop" style="display:none;" onclick="closeHistoryOnBackdrop(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="hist-modal-title">기록</h3>
+      <button class="modal-close" onclick="closeHistory()">✕</button>
+    </div>
+    <div class="modal-body" id="hist-modal-body">로딩 중...</div>
+  </div>
+</div>
+
+<!-- ── Profile Manager Modal ─────────────────── -->
+<div id="profile-modal" class="modal-backdrop" style="display:none;" onclick="closeProfileOnBackdrop(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>📋 채널 프로필 관리</h3>
+      <button class="modal-close" onclick="closeProfileModal()">✕</button>
+    </div>
+    <div class="modal-body" id="profile-modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

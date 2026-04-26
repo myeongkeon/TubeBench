@@ -6,7 +6,6 @@
 """
 
 import json
-import streamlit.components.v1 as components
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -73,19 +72,3 @@ def _prune(tab_dir: Path) -> None:
     files = sorted(tab_dir.glob("*.json"), reverse=True)
     for old in files[MAX_PER_TAB:]:
         old.unlink(missing_ok=True)
-
-
-# ──────────────────────────────────────────────
-# Mermaid 렌더링 유틸
-# ──────────────────────────────────────────────
-
-def render_mermaid(code: str, height: int = 320) -> None:
-    """Mermaid 다이어그램을 Streamlit 컴포넌트로 렌더링"""
-    html = f"""
-    <div style="background:#fff;padding:12px;border-radius:8px;border:1px solid #e0e0e0;">
-      <pre class="mermaid" style="margin:0;">{code}</pre>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-    <script>mermaid.initialize({{startOnLoad:true,theme:'default'}});</script>
-    """
-    components.html(html, height=height, scrolling=False)

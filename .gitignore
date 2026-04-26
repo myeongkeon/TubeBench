@@ -1,22 +1,23 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
 build/
 dist/
 wheels/
 *.egg-info
-
-# Virtual environments
 .venv
 
 # 환경변수 (API 키 포함 - 절대 커밋 금지)
 .env
 
-# 로컬 캐시 (JSON 캐시 파일)
+# 로컬 캐시 및 히스토리 (대용량, 민감 데이터)
 cache/*.json
+history/
+profiles/
 
-# Streamlit 설정
+# Streamlit
 .streamlit/secrets.toml
 
 # macOS
 .DS_Store
+.claude/
