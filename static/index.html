@@ -17,31 +17,18 @@
   <p class="caption">MCN급 채널 분석 플랫폼 v1.0</p>
 
   <div class="api-section">
-    <h3>🔑 API 설정</h3>
-    <div class="api-field">
-      <label>YouTube API Key</label>
-      <input type="password" id="yt-key" placeholder="AIza..." />
-    </div>
-    <div class="api-field">
-      <label>Gemini API Key</label>
-      <input type="password" id="gemini-key" placeholder="AI..." />
-    </div>
-    <div class="api-field">
-      <label>Anthropic API Key</label>
-      <input type="password" id="anthropic-key" placeholder="sk-ant-..." />
-    </div>
-
+    <h3>🔑 API 키 상태</h3>
     <div class="api-status" id="api-status">
-      <div class="status-item"><span class="dot dot-err" id="dot-yt"></span><span id="lbl-yt">YouTube API 키 없음</span></div>
-      <div class="status-item"><span class="dot dot-warn" id="dot-gemini"></span><span id="lbl-gemini">Gemini API 키 없음</span></div>
-      <div class="status-item"><span class="dot dot-warn" id="dot-anthropic"></span><span id="lbl-anthropic">Anthropic 미설정</span></div>
+      <div class="status-item"><span class="dot dot-err" id="dot-yt"></span><span id="lbl-yt">YouTube 확인 중...</span></div>
+      <div class="status-item"><span class="dot dot-warn" id="dot-gemini"></span><span id="lbl-gemini">Gemini 확인 중...</span></div>
+      <div class="status-item"><span class="dot dot-warn" id="dot-anthropic"></span><span id="lbl-anthropic">Anthropic 확인 중...</span></div>
     </div>
   </div>
 
   <hr class="sidebar-divider" />
   <p style="font-size:.72rem;color:#666;line-height:1.6;">
-    💡 키를 입력하면 자동 저장됩니다.<br>
-    API 키는 브라우저 localStorage에만 저장됩니다.
+    키는 .env 파일에서 관리합니다.<br>
+    ⚙️ 시스템 탭에서 상세 현황을 확인하세요.
   </p>
 </aside>
 
@@ -280,33 +267,41 @@
 
     <!-- ══ 시스템 ══════════════════════════════ -->
     <div class="tab-panel" id="panel-system">
+
       <div class="card">
-        <h2 style="font-size:1.05rem;margin-bottom:16px;">⚙️ 시스템 설정</h2>
-        <div class="row">
-          <div style="flex:1;">
-            <h4 style="margin-bottom:8px;">캐시 관리</h4>
-            <button class="btn btn-secondary" onclick="clearCache()">🗑️ 만료 캐시 삭제</button>
-            <div id="cache-msg" style="margin-top:8px;"></div>
-          </div>
-          <div style="flex:2;">
-            <h4 style="margin-bottom:8px;">API 할당량 안내</h4>
-            <div class="alert alert-info">
-              YouTube Data API v3 일일 할당량: <strong>10,000 units</strong><br><br>
-              <table style="font-size:.8rem;border-collapse:collapse;">
-                <tr><td style="padding:2px 8px;">channels.list</td><td>1 unit</td></tr>
-                <tr><td style="padding:2px 8px;">playlistItems.list</td><td>1 unit</td></tr>
-                <tr><td style="padding:2px 8px;">videos.list</td><td>1 unit</td></tr>
-                <tr><td style="padding:2px 8px;">commentThreads.list</td><td>1 unit</td></tr>
-                <tr><td style="padding:2px 8px;color:#c00;font-weight:700;">search.list</td><td style="color:#c00;font-weight:700;">100 units ⚠️</td></tr>
-              </table>
-            </div>
-          </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+          <h2 style="font-size:1.05rem;">🔑 API 키 관리</h2>
+          <button class="btn btn-secondary btn-sm" onclick="loadKeyStatus()">🔄 새로고침</button>
         </div>
-        <hr style="margin:20px 0;border:none;border-top:1px solid var(--border);" />
-        <h4 style="margin-bottom:8px;">캐시 정책</h4>
-        <pre style="background:#f5f5f5;padding:12px;border-radius:7px;font-size:.8rem;">캐시 유효 시간 : 1시간 (3,600초)
-저장 위치       : cache/*.json
-키 생성 방식    : MD5(요청 파라미터)</pre>
+        <p style="font-size:.8rem;color:var(--muted);margin-bottom:12px;">.env 파일에서 키를 추가/관리하세요. 여러 키는 쉼표로 구분합니다.<br>예: <code>YOUTUBE_API_KEYS=key1,key2,key3</code></p>
+        <div id="key-status-wrap">
+          <div class="loading-row"><span class="spinner"></span>로딩 중...</div>
+        </div>
+        <div style="margin-top:10px;">
+          <button class="btn btn-secondary" onclick="resetKeys()">⚡ 키 오류 상태 초기화</button>
+          <span style="font-size:.78rem;color:var(--muted);margin-left:8px;">rate limit / quota 오류로 차단된 키를 즉시 해제합니다</span>
+        </div>
+        <div id="key-reset-msg" style="margin-top:6px;"></div>
+      </div>
+
+      <div class="card">
+        <h4 style="margin-bottom:8px;">🗑️ 캐시 관리</h4>
+        <button class="btn btn-secondary" onclick="clearCache()">만료 캐시 삭제</button>
+        <div id="cache-msg" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="card">
+        <h4 style="margin-bottom:8px;">📊 YouTube API 할당량 안내</h4>
+        <div class="alert alert-info">
+          일일 할당량: <strong>10,000 units</strong> / 프로젝트 (자정 PST 초기화)<br><br>
+          <table style="font-size:.8rem;border-collapse:collapse;">
+            <tr><td style="padding:2px 8px;">channels.list</td><td>1 unit</td></tr>
+            <tr><td style="padding:2px 8px;">playlistItems.list</td><td>1 unit</td></tr>
+            <tr><td style="padding:2px 8px;">videos.list</td><td>1 unit</td></tr>
+            <tr><td style="padding:2px 8px;">commentThreads.list</td><td>1 unit</td></tr>
+            <tr><td style="padding:2px 8px;color:#c00;font-weight:700;">search.list</td><td style="color:#c00;font-weight:700;">100 units ⚠️</td></tr>
+          </table>
+        </div>
       </div>
     </div>
 

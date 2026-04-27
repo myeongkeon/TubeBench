@@ -1,8 +1,11 @@
 import re
 import pandas as pd
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from typing import Optional
 from core.api_handler import YouTubeAPIHandler
+from core.ai_stream import make_sse_gen
 from core import history as hist
 
 router = APIRouter()
@@ -12,28 +15,32 @@ MCN_THRESHOLDS = {
     "S": {"view_rate": 10.0, "engagement": 2.0},
     "A": {"view_rate": 5.0,  "engagement": 1.0},
 }
-DIAGNOSIS = {
-    "S": {
-        "summary": "구독자 도달률과 팬덤 참여도가 모두 최상위권입니다. MCN 파트너십 협상 및 광고 단가 인상에 유리한 지표를 보유하고 있습니다.",
-        "strengths": ["높은 구독자 도달률 → 알고리즘 노출 선순환 구조", "강력한 팬덤 참여도 → 댓글·좋아요 기반 커뮤니티 형성"],
-        "improvements": ["콘텐츠 다각화(쇼츠 연계)로 신규 시청자 유입 확대", "멤버십·굿즈 등 수익 다변화 시점 검토"],
-    },
-    "A": {
-        "summary": "성장 궤도에 있는 채널입니다. 핵심 지표를 한 단계 끌어올리면 S등급 진입이 가능합니다.",
-        "strengths": ["안정적인 콘텐츠 생산력과 기본 팬층 확보"],
-        "improvements": ["썸네일·제목 A/B 테스트로 클릭률(CTR) 개선 → 조회율 향상", "영상 말미 CTA(구독·좋아요 요청) 강화로 참여도 증가", "업로드 일관성 유지(주 1~2회)로 알고리즘 노출 안정화"],
-    },
-    "B": {
-        "summary": "성장 초기 단계이거나 정체 구간에 있습니다. 경쟁사 아웃라이어 분석을 통해 돌파구 주제를 발굴하세요.",
-        "strengths": ["아직 실험 여지가 넓어 콘텐츠 방향 전환이 유연함"],
-        "improvements": ["Hook 강화: 첫 30초 시청 지속률 개선이 이탈률의 핵심 원인", "경쟁사 아웃라이어 영상 분석 후 주제 전략 전면 재수립", "업로드 빈도 조정 — 양보다 질 집중(주 1회 고품질)"],
-    },
-}
+
+AI_SYSTEM = """\
+당신은 10년 경력의 MCN 채널 전략 컨설턴트입니다.
+실제 YouTube 채널 데이터를 바탕으로 해당 채널에만 적용되는 구체적이고 실행 가능한 인사이트를 제공합니다.
+분석은 수치 근거를 반드시 포함하고, 일반적 조언 대신 이 채널의 데이터 패턴에서 도출된 결론을 제시하세요.
+한국어로 작성하세요.\
+"""
 
 
 class AnalyzeRequest(BaseModel):
-    youtube_api_key: str
     channel_input: str
+
+
+class AISuggestRequest(BaseModel):
+    model_id:       str = "gemini-2.0-flash"
+    channel_title:  str
+    subscriber:     int
+    grade:          str
+    view_rate:      float
+    avg_engagement: float
+    avg_views:      int
+    upload_freq:    float
+    trend:          str
+    top_videos:     list
+    low_videos:     list
+    outlier_videos: list
 
 
 def _build_df(videos, stats):
@@ -70,7 +77,7 @@ def _get_grade(view_rate, engagement):
 
 @router.post("/analyze")
 def analyze(req: AnalyzeRequest):
-    handler = YouTubeAPIHandler(api_key=req.youtube_api_key)
+    handler = YouTubeAPIHandler()
 
     channel_id = handler.resolve_channel_id(req.channel_input)
     channel = handler.get_channel_info(channel_id)
@@ -93,6 +100,35 @@ def analyze(req: AnalyzeRequest):
     upload_freq    = (days_span / len(df)) if len(df) > 1 and days_span > 0 else 0
 
     grade = _get_grade(view_rate, avg_engagement)
+
+    # 트렌드 방향: 최근 10개 vs 이전 영상 평균 비교
+    sorted_valid = valid.sort_values("published_at")
+    n = len(sorted_valid)
+    recent_avg = float(sorted_valid.tail(min(10, n))["view_count"].mean())
+    older_avg  = float(sorted_valid.head(max(1, n - 10))["view_count"].mean()) if n > 10 else recent_avg
+    if older_avg > 0:
+        trend_ratio = recent_avg / older_avg
+        trend = "up" if trend_ratio >= 1.15 else "down" if trend_ratio <= 0.85 else "flat"
+    else:
+        trend = "flat"
+
+    # 아웃라이어 영상 (평균 2배 이상)
+    outlier_videos = (
+        valid[valid["view_count"] >= avg_views * 2]
+        .nlargest(5, "view_count")[["title", "view_count", "engagement_rate"]]
+        .round({"engagement_rate": 2})
+        .to_dict("records")
+    )
+
+    # 저성과 영상 (평균 50% 미만, 최소 5개 이상 있을 때)
+    low_videos = []
+    if n >= 5:
+        low_videos = (
+            valid[valid["view_count"] < avg_views * 0.5]
+            .nsmallest(5, "view_count")[["title", "view_count", "engagement_rate"]]
+            .round({"engagement_rate": 2})
+            .to_dict("records")
+        )
 
     # Chart data
     trend_data = valid[["published_at", "view_count", "title"]].copy()
@@ -143,10 +179,83 @@ def analyze(req: AnalyzeRequest):
             "avg_engagement": round(avg_engagement, 3),
             "upload_freq":    round(upload_freq, 1),
             "grade":          grade,
+            "trend":          trend,
         },
-        "diagnosis": DIAGNOSIS[grade],
+        "ai_context": {
+            "channel_title":    channel["title"],
+            "subscriber":       sub,
+            "grade":            grade,
+            "view_rate":        round(view_rate, 2),
+            "avg_engagement":   round(avg_engagement, 3),
+            "avg_views":        round(avg_views),
+            "upload_freq":      round(upload_freq, 1),
+            "trend":            trend,
+            "top_videos":       (
+                valid.nlargest(5, "engagement_rate")[["title", "view_count", "engagement_rate"]]
+                .round({"engagement_rate": 2})
+                .to_dict("records")
+            ),
+            "low_videos":       low_videos,
+            "outlier_videos":   outlier_videos,
+        },
         "chart_trend":      trend_list,
         "chart_engagement": eng_list,
         "raw_videos":       raw_videos,
         "mcn_thresholds":   MCN_THRESHOLDS,
     }
+
+
+def _build_ai_prompt(req: AISuggestRequest) -> str:
+    trend_kor = {"up": "상승", "down": "하락", "flat": "보합"}.get(req.trend, req.trend)
+    freq_str  = f"{req.upload_freq:.1f}일에 1회" if req.upload_freq > 0 else "불규칙"
+
+    top_str = "\n".join(
+        f"  - {v['title'][:40]} | 조회 {v['view_count']:,} | 참여율 {v['engagement_rate']:.2f}%"
+        for v in req.top_videos
+    )
+    low_str = "\n".join(
+        f"  - {v['title'][:40]} | 조회 {v['view_count']:,} | 참여율 {v['engagement_rate']:.2f}%"
+        for v in req.low_videos
+    ) or "  (데이터 없음)"
+    out_str = "\n".join(
+        f"  - {v['title'][:40]} | 조회 {v['view_count']:,} | 참여율 {v['engagement_rate']:.2f}%"
+        for v in req.outlier_videos
+    ) or "  (데이터 없음)"
+
+    return f"""\
+[채널 데이터]
+채널명: {req.channel_title}
+구독자: {req.subscriber:,}명
+MCN 등급: {req.grade}등급
+평균 조회수: {req.avg_views:,}회
+조회율(조회수/구독자): {req.view_rate:.2f}%
+평균 참여율: {req.avg_engagement:.3f}%
+업로드 주기: {freq_str}
+최근 트렌드: {trend_kor}
+
+[참여율 상위 영상 TOP 5]
+{top_str}
+
+[저성과 영상 (평균 50% 미만)]
+{low_str}
+
+[아웃라이어 영상 (평균 2배 이상)]
+{out_str}
+
+위 데이터를 바탕으로 이 채널({req.channel_title})에만 해당하는 구체적인 개선 인사이트를 제공하세요.
+
+다음 항목을 반드시 포함하세요:
+1. **채널 현황 진단** — 수치를 인용하여 현재 성과의 강점과 약점을 구체적으로 설명
+2. **고성과 콘텐츠 패턴 분석** — 상위 영상에서 발견되는 공통 패턴(제목, 주제, 형식 등)과 그 이유
+3. **저성과 원인 분석** — 저성과 영상이 왜 낮은 성과를 보이는지 구체적인 가설 제시
+4. **즉시 실행 가능한 개선 전략 3가지** — 이 채널의 데이터에서 도출된 전략 (일반론 금지)
+5. **업로드 전략 최적화** — 현재 {freq_str} 주기와 트렌드({trend_kor}) 기반으로 업로드 빈도/타이밍 조언
+
+수치 근거를 반드시 포함하고, 이 채널 데이터에서만 도출 가능한 인사이트를 제공하세요."""
+
+
+@router.post("/ai-suggestions")
+def ai_suggestions(req: AISuggestRequest):
+    prompt = _build_ai_prompt(req)
+    gen = make_sse_gen(req.model_id, AI_SYSTEM, prompt)
+    return StreamingResponse(gen(), media_type="text/event-stream")

@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
+from core.ai_stream import make_sse_gen
 from core import history as hist
 
 router = APIRouter()
@@ -46,14 +47,12 @@ SYSTEM_PROMPT = """\
 
 
 class PlannerRequest(BaseModel):
-    gemini_api_key:   Optional[str] = None
-    anthropic_api_key: Optional[str] = None
-    model_id:         str = "gemini-2.0-flash"
-    topic:            str
-    channel_info:     Optional[str] = None
-    target_length:    Optional[str] = None
-    outlier_data:     Optional[str] = None
-    gap_keywords:     Optional[str] = None
+    model_id:      str = "gemini-2.0-flash"
+    topic:         str
+    channel_info:  Optional[str] = None
+    target_length: Optional[str] = None
+    outlier_data:  Optional[str] = None
+    gap_keywords:  Optional[str] = None
 
 
 def _build_prompt(req: PlannerRequest) -> str:
@@ -70,70 +69,19 @@ def _build_prompt(req: PlannerRequest) -> str:
     return "\n".join(parts)
 
 
-def _stream_gemini(api_key, model_id, prompt):
-    import google.generativeai as genai
-    genai.configure(api_key=api_key)
-    model    = genai.GenerativeModel(model_name=model_id, system_instruction=SYSTEM_PROMPT)
-    response = model.generate_content(prompt, stream=True)
-    for chunk in response:
-        try:
-            text = chunk.text
-        except (ValueError, AttributeError):
-            continue
-        if text:
-            yield text
-
-
-def _stream_claude(api_key, model_id, prompt):
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
-    with client.messages.stream(
-        model=model_id,
-        max_tokens=4096,
-        system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for chunk in stream.text_stream:
-            yield chunk
-
-
-def _sse_generator(req: PlannerRequest):
-    prompt = _build_prompt(req)
-    is_gemini = not req.model_id.startswith("claude")
-    full_text = ""
-
-    try:
-        if is_gemini and req.gemini_api_key:
-            for chunk in _stream_gemini(req.gemini_api_key, req.model_id, prompt):
-                full_text += chunk
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
-        elif not is_gemini and req.anthropic_api_key:
-            for chunk in _stream_claude(req.anthropic_api_key, req.model_id, prompt):
-                full_text += chunk
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
-        else:
-            yield f"data: {json.dumps({'error': 'API 키가 없습니다.'})}\n\n"
-            return
-    except Exception as e:
-        yield f"data: {json.dumps({'error': str(e)})}\n\n"
-        return
-
-    if full_text:
-        hist.save_result("ai_planner", req.topic[:40], {
-            "model":         req.model_id,
-            "topic":         req.topic,
-            "channel_info":  req.channel_info or "",
-            "target_length": req.target_length or "",
-            "output":        full_text,
-        })
-
-    yield f"data: {json.dumps({'done': True})}\n\n"
-
-
 @router.post("/stream")
 def stream(req: PlannerRequest):
+    prompt = _build_prompt(req)
+    gen = make_sse_gen(
+        req.model_id, SYSTEM_PROMPT, prompt,
+        on_complete=lambda t: hist.save_result("ai_planner", req.topic[:40], {
+            "model": req.model_id, "topic": req.topic,
+            "channel_info": req.channel_info or "", "target_length": req.target_length or "",
+            "output": t,
+        }),
+    )
     return StreamingResponse(
-        _sse_generator(req),
+        gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

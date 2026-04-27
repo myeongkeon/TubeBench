@@ -14,7 +14,6 @@ DEFAULT_OUTLIER_MULT = 2.0
 
 
 class CompetitorRequest(BaseModel):
-    youtube_api_key:  str
     my_channel:       Optional[str] = None
     competitor_ids:   list[str]
     outlier_mult:     float = DEFAULT_OUTLIER_MULT
@@ -109,7 +108,7 @@ def _content_gap(my_df, comp_dfs):
 
 @router.post("/analyze")
 def analyze(req: CompetitorRequest):
-    handler   = YouTubeAPIHandler(api_key=req.youtube_api_key)
+    handler   = YouTubeAPIHandler()
     comp_data = []
     my_summary = None
     errors = []

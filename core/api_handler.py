@@ -22,6 +22,8 @@ from googleapiclient.errors import HttpError
 
 load_dotenv()
 
+from core import key_manager as _km
+
 # ──────────────────────────────────────────────
 # 상수 설정
 # ──────────────────────────────────────────────
@@ -47,29 +49,54 @@ class YouTubeAPIHandler:
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("YOUTUBE_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "YOUTUBE_API_KEY가 설정되지 않았습니다.\n"
-                ".env 파일에 YOUTUBE_API_KEY=<키값> 을 추가하세요."
-            )
-        self._client = None  # 첫 호출 시 초기화 (Lazy init)
+        if api_key:
+            self._pool = None
+            self._active_key = api_key
+        else:
+            self._pool = _km.youtube
+            self._active_key = None
+        self._client = None
 
     # ──────────────────────────────────────────────
     # API 클라이언트
     # ──────────────────────────────────────────────
 
-    @property
-    def client(self):
-        """API 클라이언트 Lazy 초기화 - 불필요한 연결 비용 방지"""
+    def _get_client(self):
+        if self._pool:
+            key = self._pool.get()
+            if not key:
+                raise RuntimeError("사용 가능한 YouTube API 키가 없습니다. 모든 키의 할당량이 초과되었습니다.")
+            if key != self._active_key:
+                self._active_key = key
+                self._client = None
         if self._client is None:
             self._client = build(
                 YOUTUBE_API_SERVICE,
                 YOUTUBE_API_VERSION,
-                developerKey=self.api_key,
-                cache_discovery=False,  # 파일시스템 캐시 경고 억제
+                developerKey=self._active_key,
+                cache_discovery=False,
             )
         return self._client
+
+    def _exec(self, build_req_fn):
+        """YouTube API 요청 실행 — 할당량 초과 시 다음 키로 자동 전환."""
+        max_tries = self._pool.size() if self._pool else 1
+        for attempt in range(max_tries):
+            client = self._get_client()
+            try:
+                return build_req_fn(client).execute()
+            except HttpError as e:
+                err_str = str(e)
+                if self._pool and ("403" in err_str) and any(
+                    w in err_str.lower() for w in ["quota", "exceeded", "limit"]
+                ):
+                    self._pool.mark_error(self._active_key, "quota")
+                    self._active_key = None
+                    self._client = None
+                    if attempt < max_tries - 1:
+                        continue
+                raise
+        raise RuntimeError("모든 YouTube API 키의 할당량이 초과되었습니다.")
 
     # ──────────────────────────────────────────────
     # 캐시 유틸리티
@@ -141,11 +168,7 @@ class YouTubeAPIHandler:
             return cached
 
         try:
-            response = (
-                self.client.channels()
-                .list(part="id", forHandle=handle)
-                .execute()
-            )
+            response = self._exec(lambda c: c.channels().list(part="id", forHandle=handle))
         except HttpError as e:
             raise RuntimeError(f"핸들 변환 실패 ({handle}): {e}") from e
 
@@ -175,10 +198,8 @@ class YouTubeAPIHandler:
             return cached
 
         try:
-            response = (
-                self.client.channels()
-                .list(part="snippet,statistics,contentDetails", id=channel_id)
-                .execute()
+            response = self._exec(
+                lambda c: c.channels().list(part="snippet,statistics,contentDetails", id=channel_id)
             )
         except HttpError as e:
             raise RuntimeError(f"채널 정보 조회 실패 (channel_id={channel_id}): {e}") from e
@@ -228,15 +249,14 @@ class YouTubeAPIHandler:
         try:
             while len(videos) < max_results:
                 batch_size = min(50, max_results - len(videos))
-                response = (
-                    self.client.playlistItems()
-                    .list(
+                pt = next_page_token
+                response = self._exec(
+                    lambda c: c.playlistItems().list(
                         part="snippet",
                         playlistId=uploads_playlist_id,
                         maxResults=batch_size,
-                        pageToken=next_page_token,
+                        pageToken=pt,
                     )
-                    .execute()
                 )
 
                 for item in response.get("items", []):
@@ -283,13 +303,11 @@ class YouTubeAPIHandler:
             # API는 한 번에 최대 50개 처리 → 배치 분할
             for i in range(0, len(video_ids), 50):
                 batch = video_ids[i : i + 50]
-                response = (
-                    self.client.videos()
-                    .list(
+                response = self._exec(
+                    lambda c, b=batch: c.videos().list(
                         part="statistics,contentDetails,snippet",
-                        id=",".join(batch),
+                        id=",".join(b),
                     )
-                    .execute()
                 )
 
                 for item in response.get("items", []):
@@ -326,9 +344,8 @@ class YouTubeAPIHandler:
             return cached
 
         try:
-            response = (
-                self.client.search()
-                .list(
+            response = self._exec(
+                lambda c: c.search().list(
                     part="snippet",
                     q=keyword,
                     type="video",
@@ -336,7 +353,6 @@ class YouTubeAPIHandler:
                     order="relevance",
                     regionCode="KR",
                 )
-                .execute()
             )
         except HttpError as e:
             raise RuntimeError(f"키워드 검색 실패 ({keyword}): {e}") from e
@@ -370,16 +386,14 @@ class YouTubeAPIHandler:
 
         comments = []
         try:
-            response = (
-                self.client.commentThreads()
-                .list(
+            response = self._exec(
+                lambda c: c.commentThreads().list(
                     part="snippet",
                     videoId=video_id,
                     maxResults=min(max_results, 100),
                     order="relevance",
                     textFormat="plainText",
                 )
-                .execute()
             )
             for item in response.get("items", []):
                 top = item["snippet"]["topLevelComment"]["snippet"]

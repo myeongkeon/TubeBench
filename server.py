@@ -2,6 +2,9 @@
 YouTube Strategy Hub - FastAPI 웹 서버
 """
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse

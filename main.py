@@ -20,6 +20,14 @@ DIR  = os.path.dirname(os.path.abspath(__file__))
 
 def _open_browser():
     time.sleep(2.5)
+    chrome_paths = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    ]
+    for path in chrome_paths:
+        if os.path.exists(path):
+            subprocess.Popen([path, "--incognito", URL])
+            return
     webbrowser.open(URL)
 
 

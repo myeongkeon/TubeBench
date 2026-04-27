@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from core.api_handler import YouTubeAPIHandler
+from core.ai_stream import make_sse_gen
 from core import history as hist
 from modules.channel_profiles import list_profiles, load_profile, save_profile, delete_profile
 
@@ -28,32 +29,26 @@ COMMENT_SYSTEM = """\
 
 
 class TrendAnalyzeRequest(BaseModel):
-    youtube_api_key:  str
-    my_channel_id:    str
-    competitor_ids:   list[str]
+    my_channel_id:  str
+    competitor_ids: list
 
 
 class TrendStreamRequest(BaseModel):
-    gemini_api_key:   Optional[str] = None
-    anthropic_api_key: Optional[str] = None
     model_id:         str = "gemini-2.0-flash"
     my_channel_title: str
     summary_text:     str
 
 
 class CommentStreamRequest(BaseModel):
-    gemini_api_key:   Optional[str] = None
-    anthropic_api_key: Optional[str] = None
-    model_id:         str = "gemini-2.0-flash"
-    video_title:      str
-    keyword:          str
-    comments:         list[dict]
+    model_id:    str = "gemini-2.0-flash"
+    video_title: str
+    keyword:     str
+    comments:    list
 
 
 class ProfileSaveRequest(BaseModel):
-    youtube_api_key: str
-    my_channel:      str
-    competitors:     list[str]
+    my_channel:  str
+    competitors: list
 
 
 def _velocity_score(view_count, published_at):
@@ -77,7 +72,7 @@ def _title_patterns(title):
 
 @router.post("/analyze")
 def analyze(req: TrendAnalyzeRequest):
-    handler  = YouTubeAPIHandler(api_key=req.youtube_api_key)
+    handler  = YouTubeAPIHandler()
     cutoff   = datetime.now(timezone.utc) - timedelta(days=TREND_DAYS)
     errors   = []
     comp_data = []
@@ -159,56 +154,6 @@ def analyze(req: TrendAnalyzeRequest):
     }
 
 
-def _stream_gemini(api_key, model_id, system, prompt):
-    import google.generativeai as genai
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name=model_id, system_instruction=system)
-    response = model.generate_content(prompt, stream=True)
-    for chunk in response:
-        try:
-            text = chunk.text
-        except (ValueError, AttributeError):
-            continue
-        if text:
-            yield text
-
-
-def _stream_claude(api_key, model_id, system, prompt):
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
-    with client.messages.stream(
-        model=model_id, max_tokens=3000,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for chunk in stream.text_stream:
-            yield chunk
-
-
-def _make_sse(req_model, system, prompt_text, hist_tab, hist_label, hist_extra):
-    def gen():
-        full_text = ""
-        is_gemini = not req_model.model_id.startswith("claude")
-        try:
-            if is_gemini and req_model.gemini_api_key:
-                for chunk in _stream_gemini(req_model.gemini_api_key, req_model.model_id, system, prompt_text):
-                    full_text += chunk
-                    yield f"data: {json.dumps({'text': chunk})}\n\n"
-            elif not is_gemini and req_model.anthropic_api_key:
-                for chunk in _stream_claude(req_model.anthropic_api_key, req_model.model_id, system, prompt_text):
-                    full_text += chunk
-                    yield f"data: {json.dumps({'text': chunk})}\n\n"
-            else:
-                yield f"data: {json.dumps({'error': 'API 키가 없습니다.'})}\n\n"
-                return
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-            return
-
-        if full_text:
-            hist.save_result(hist_tab, hist_label, {**hist_extra, "output": full_text})
-        yield f"data: {json.dumps({'done': True})}\n\n"
-    return gen
 
 
 @router.post("/stream")
@@ -235,9 +180,11 @@ def stream_trend(req: TrendStreamRequest):
 ### ⚡ 긴급도
 HIGH / MEDIUM / LOW 중 하나와 이유 (트렌드 수명 예측)\
 """
-    gen = _make_sse(req, TREND_SYSTEM, prompt, "trend_planner",
-                    req.my_channel_title[:30],
-                    {"my_channel": req.my_channel_title, "competitor_count": 0, "videos_analyzed": 0})
+    gen = make_sse_gen(
+        req.model_id, TREND_SYSTEM, prompt,
+        on_complete=lambda t: hist.save_result("trend_planner", req.my_channel_title[:30],
+                                               {"my_channel": req.my_channel_title, "output": t}),
+    )
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -268,8 +215,11 @@ def stream_comment(req: CommentStreamRequest):
 ### 3. 영상 도입부 훅(Hook) 문장 3개
 댓글에서 발견한 시청자 언어를 활용한 도입부 멘트\
 """
-    gen = _make_sse(req, COMMENT_SYSTEM, prompt, "trend_planner",
-                    req.video_title[:30], {"video_title": req.video_title})
+    gen = make_sse_gen(
+        req.model_id, COMMENT_SYSTEM, prompt,
+        on_complete=lambda t: hist.save_result("trend_planner", req.video_title[:30],
+                                               {"video_title": req.video_title, "output": t}),
+    )
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -281,7 +231,7 @@ def get_profiles():
 
 @router.post("/profiles/save")
 def save_profile_endpoint(req: ProfileSaveRequest):
-    handler = YouTubeAPIHandler(api_key=req.youtube_api_key)
+    handler = YouTubeAPIHandler()
     errors  = []
     try:
         my_id   = handler.resolve_channel_id(req.my_channel)
@@ -319,7 +269,7 @@ def delete_profile_endpoint(channel_id: str):
 
 
 @router.get("/comments")
-def get_comments(youtube_api_key: str, video_id: str, max_results: int = 100):
-    handler  = YouTubeAPIHandler(api_key=youtube_api_key)
+def get_comments(video_id: str, max_results: int = 100):
+    handler  = YouTubeAPIHandler()
     comments = handler.get_video_comments(video_id, max_results=max_results)
     return {"comments": comments}

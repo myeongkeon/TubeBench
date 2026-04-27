@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
 from core.api_handler import YouTubeAPIHandler
+from core.ai_stream import make_sse_gen
 from core import history as hist
 
 router = APIRouter()
@@ -24,28 +24,23 @@ COMMENT_SYSTEM = """\
 
 
 class KeywordRequest(BaseModel):
-    youtube_api_key: str
-    keyword:         str
-    max_results:     int = 20
+    keyword:     str
+    max_results: int = 20
 
 
 class KeywordAIRequest(BaseModel):
-    gemini_api_key:   Optional[str] = None
-    anthropic_api_key: Optional[str] = None
-    model_id:         str = "gemini-2.0-flash"
-    keyword:          str
-    score:            dict
-    videos:           list[dict]
-    stats:            list[dict]
+    model_id: str = "gemini-2.0-flash"
+    keyword:  str
+    score:    dict
+    videos:   list
+    stats:    list
 
 
 class CommentAIRequest(BaseModel):
-    gemini_api_key:   Optional[str] = None
-    anthropic_api_key: Optional[str] = None
-    model_id:         str = "gemini-2.0-flash"
-    video_title:      str
-    keyword:          str
-    comments:         list[dict]
+    model_id:    str = "gemini-2.0-flash"
+    video_title: str
+    keyword:     str
+    comments:    list
 
 
 def _compute_score(stats):
@@ -128,7 +123,7 @@ def _compute_score(stats):
 
 @router.post("/analyze")
 def analyze(req: KeywordRequest):
-    handler = YouTubeAPIHandler(api_key=req.youtube_api_key)
+    handler = YouTubeAPIHandler()
     videos  = handler.search_videos_by_keyword(req.keyword, max_results=req.max_results)
     if not videos:
         return {"error": f"'{req.keyword}' 키워드 검색 결과가 없습니다."}
@@ -160,55 +155,6 @@ def analyze(req: KeywordRequest):
     }
 
 
-def _stream_gemini(api_key, model_id, system, prompt):
-    import google.generativeai as genai
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name=model_id, system_instruction=system)
-    response = model.generate_content(prompt, stream=True)
-    for chunk in response:
-        try:
-            text = chunk.text
-        except (ValueError, AttributeError):
-            continue
-        if text:
-            yield text
-
-
-def _stream_claude(api_key, model_id, system, prompt):
-    import anthropic
-    client = anthropic.Anthropic(api_key=api_key)
-    with client.messages.stream(
-        model=model_id, max_tokens=3000,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    ) as stream:
-        for chunk in stream.text_stream:
-            yield chunk
-
-
-def _sse_gen(api_keys_model, system, prompt, tab, label, extra):
-    def gen():
-        full = ""
-        is_gemini = not api_keys_model["model_id"].startswith("claude")
-        try:
-            if is_gemini and api_keys_model.get("gemini_api_key"):
-                for chunk in _stream_gemini(api_keys_model["gemini_api_key"], api_keys_model["model_id"], system, prompt):
-                    full += chunk
-                    yield f"data: {json.dumps({'text': chunk})}\n\n"
-            elif not is_gemini and api_keys_model.get("anthropic_api_key"):
-                for chunk in _stream_claude(api_keys_model["anthropic_api_key"], api_keys_model["model_id"], system, prompt):
-                    full += chunk
-                    yield f"data: {json.dumps({'text': chunk})}\n\n"
-            else:
-                yield f"data: {json.dumps({'error': 'API 키가 없습니다.'})}\n\n"
-                return
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-            return
-        if full:
-            hist.save_result(tab, label, {**extra, "output": full})
-        yield f"data: {json.dumps({'done': True})}\n\n"
-    return gen
 
 
 @router.post("/ai-stream")
@@ -238,10 +184,11 @@ def ai_stream(req: KeywordAIRequest):
 ### 4. 주의사항
 ### 5. 최적 업로드 전략\
 """
-    keys = {"gemini_api_key": req.gemini_api_key, "anthropic_api_key": req.anthropic_api_key,
-            "model_id": req.model_id}
-    gen = _sse_gen(keys, KEYWORD_SYSTEM, prompt, "keyword_analyzer", req.keyword[:30],
-                   {"keyword": req.keyword, "score": req.score})
+    gen = make_sse_gen(
+        req.model_id, KEYWORD_SYSTEM, prompt,
+        on_complete=lambda t: hist.save_result("keyword_analyzer", req.keyword[:30],
+                                               {"keyword": req.keyword, "score": req.score, "output": t}),
+    )
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -260,16 +207,17 @@ def comment_stream(req: CommentAIRequest):
 ### 2. 새로운 영상 기획안 3개
 ### 3. 영상 도입부 훅(Hook) 문장 3개\
 """
-    keys = {"gemini_api_key": req.gemini_api_key, "anthropic_api_key": req.anthropic_api_key,
-            "model_id": req.model_id}
-    gen = _sse_gen(keys, COMMENT_SYSTEM, prompt, "keyword_analyzer",
-                   req.video_title[:30], {"video_title": req.video_title})
+    gen = make_sse_gen(
+        req.model_id, COMMENT_SYSTEM, prompt,
+        on_complete=lambda t: hist.save_result("keyword_analyzer", req.video_title[:30],
+                                               {"video_title": req.video_title, "output": t}),
+    )
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.get("/comments")
-def get_comments(youtube_api_key: str, video_id: str, max_results: int = 100):
-    handler  = YouTubeAPIHandler(api_key=youtube_api_key)
+def get_comments(video_id: str, max_results: int = 100):
+    handler  = YouTubeAPIHandler()
     comments = handler.get_video_comments(video_id, max_results=max_results)
     return {"comments": comments}
